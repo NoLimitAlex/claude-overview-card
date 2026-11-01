@@ -1,0 +1,9 @@
+{
+  "name": "overview-card",
+  "version": "0.1.0",
+  "description": "Brings back the old usage overview card: sessions, messages, tokens, favorite model and an activity heatmap.",
+  "author": { "name": "Lepi" },
+  "license": "MIT",
+  "repository": "https://github.com/NoLimitAlex/claude-overview-card",
+  "types": "./types/index.d.ts"
+}

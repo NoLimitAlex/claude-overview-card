@@ -1,0 +1,5 @@
+{
+  "name": "lepi-mods",
+  "owner": { "name": "Lepi" },
+  "plugins": [{ "name": "overview-card", "source": "./" }]
+}
