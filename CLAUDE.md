@@ -28,7 +28,11 @@ Don't change the user's settings files by hand, and don't install it any other w
 
 ## What it reads
 
-Only files Claude Code already keeps: `stats-cache.json` and the session logs (`projects/**/*.jsonl`) in the Claude config folder (`~/.claude`, or `CLAUDE_CONFIG_DIR` if set). It sends nothing anywhere. The bundled Node script `scripts/recent-stats.mjs` counts the days `stats-cache.json` hasn't covered yet and prices usage with `scripts/pricing.mjs`.
+Only files Claude Code already keeps: `stats-cache.json` and the session logs (`projects/**/*.jsonl`) in the Claude config folder (`~/.claude`, or `CLAUDE_CONFIG_DIR` if set). It sends nothing anywhere itself. With sync on (below) it also writes one numbers-only summary file to the shared folder, which the user's OneDrive then syncs. The bundled Node script `scripts/recent-stats.mjs` counts the days `stats-cache.json` hasn't covered yet and prices usage with `scripts/pricing.mjs`.
+
+## Syncing usage across the user's computers
+
+Sync is off unless a shared folder exists. The card uses `CLAUDE_USAGE_SYNC_DIR` when it's set, otherwise a folder called `claude-usage` in OneDrive (`%OneDrive%\claude-usage`). If the user wants their computers added together, make that folder in their OneDrive, after checking that OneDrive is signed in to the same account on each computer. Each computer writes `<computer name>.usage.json` there with numbers only, and adds up the others. Never put anything else in that folder.
 
 ## Editing it for the user
 
@@ -41,6 +45,7 @@ Claude Code reads the mod straight from the folder it was installed from. After 
 | `hooks/stats.ts` | Totals, ranges, heatmap levels and colors, number formatting |
 | `scripts/recent-stats.mjs` | Counting recent days, limit windows and the current session from the logs |
 | `scripts/pricing.mjs` | API list prices per model |
+| `scripts/sync.mjs` | The shared-folder sync: writing this computer's summary and adding up the others |
 | `types/index.d.ts` | The types of the values the card keeps in session state |
 | `tests/overview.test.ts` | Tests |
 
