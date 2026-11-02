@@ -38,6 +38,42 @@ export function mergeRecent(cache: StatsCache, recent: Recent | null | undefined
   }
 }
 
+// The other computers' usage, added up (scripts/sync.mjs).
+export type Others = {
+  dailyActivity: { date: string; messageCount: number; sessionCount: number }[]
+  dailyModelTokens: { date: string; tokensByModel: Record<string, number> }[]
+  totalSessions: number
+  totalMessages: number
+  hourCounts: Record<string, number>
+}
+
+// Adds the other computers' days and totals to this computer's, day by day.
+export function mergeOthers(s: StatsCache, others: Others | null | undefined): StatsCache {
+  if (!others) return s
+  const activity = new Map<string, { date: string; messageCount: number; sessionCount: number }>()
+  for (const d of [...(s.dailyActivity ?? []), ...others.dailyActivity]) {
+    const held = activity.get(d.date) ?? { date: d.date, messageCount: 0, sessionCount: 0 }
+    activity.set(d.date, { date: d.date, messageCount: held.messageCount + d.messageCount, sessionCount: held.sessionCount + d.sessionCount })
+  }
+  const tokens = new Map<string, Record<string, number>>()
+  for (const d of [...(s.dailyModelTokens ?? []), ...others.dailyModelTokens]) {
+    const held = { ...(tokens.get(d.date) ?? {}) }
+    for (const [m, n] of Object.entries(d.tokensByModel)) held[m] = (held[m] ?? 0) + n
+    tokens.set(d.date, held)
+  }
+  const hours: Record<string, number> = { ...(s.hourCounts ?? {}) }
+  for (const [h, n] of Object.entries(others.hourCounts)) hours[h] = (hours[h] ?? 0) + n
+  const byDate = <T extends { date: string }>(a: T, b: T) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)
+  return {
+    ...s,
+    dailyActivity: [...activity.values()].sort(byDate),
+    dailyModelTokens: [...tokens.entries()].map(([date, tokensByModel]) => ({ date, tokensByModel })).sort(byDate),
+    totalSessions: (s.totalSessions ?? 0) + others.totalSessions,
+    totalMessages: (s.totalMessages ?? 0) + others.totalMessages,
+    hourCounts: hours,
+  }
+}
+
 export type Summary = {
   sessions: number
   messages: number

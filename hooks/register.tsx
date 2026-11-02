@@ -9,6 +9,7 @@ import {
   duneLine,
   formatCount,
   grid,
+  mergeOthers,
   mergeRecent,
   rangeStart,
   rasterCells,
@@ -26,7 +27,7 @@ const range = atom({ plugin: 'overview-card', key: 'range' } as const, 'all' as 
 const tab = atom({ plugin: 'overview-card', key: 'tab' } as const, 'overview' as OverviewTab)
 // The shape tag changes whenever the counter's output does, so numbers saved by an
 // older version are ignored instead of shown without the newer fields.
-const recent = atom({ plugin: 'overview-card', key: 'recent' } as const, null as OverviewRecent | null, { shape: 'counts-v4' })
+const recent = atom({ plugin: 'overview-card', key: 'recent' } as const, null as OverviewRecent | null, { shape: 'counts-v5' })
 const limits = atom({ plugin: 'overview-card', key: 'limits' } as const, null as OverviewLimits | null)
 const countError = atom({ plugin: 'overview-card', key: 'countError' } as const, null as OverviewCountError | null)
 const REFRESH_MS = 10 * 60 * 1000
@@ -77,7 +78,7 @@ export const register: Register = on => {
     const cached = await loadStats($)
     const extra = await read($, recent)
     if (extra === null || Date.now() - extra.checkedAt > STALE_MS) recountSoon($)
-    const stats = cached === undefined ? undefined : mergeRecent(cached, extra)
+    const stats = cached === undefined ? undefined : mergeOthers(mergeRecent(cached, extra), extra?.others)
     if (stats === undefined) {
       return (
         <Box flexDirection="column">
@@ -190,7 +191,8 @@ export const register: Register = on => {
     const weekStart = rangeStart('7d', now) ?? ''
     const weekUsd = cost === undefined ? undefined : Object.entries(cost.byDay).reduce((n, [d, usd]) => (d >= weekStart ? n + usd : n), 0)
     const todayKey = dayKey(now)
-    const lifetime = cost === undefined ? undefined : { usd: cost.lifetimeUsd, since: cost.since }
+    const computers = Math.max(1, extra?.sync?.computers.length ?? 1)
+    const lifetime = cost === undefined ? undefined : { usd: cost.lifetimeUsd, since: cost.since, computers }
     const failed = await read($, countError)
     const windowTotals = (name: string) => {
       const w = extra?.windows?.[name]
@@ -259,7 +261,7 @@ export const register: Register = on => {
             <Box flexDirection="column">
               <Text dimColor bold>LIFETIME API VALUE</Text>
               <Text bold color="#58b4ff">{money(lifetime.usd)}</Text>
-              <Text dimColor>{lifetimeNote(lifetime.since)} · {updatedLabel(extra?.checkedAt)}</Text>
+              <Text dimColor>{lifetimeNote(lifetime.since, computers)} · {updatedLabel(extra?.checkedAt)}</Text>
             </Box>
           )}
           {blocks.map((b, bi) => (
@@ -368,8 +370,10 @@ async function refreshRecent($: EngineInterface): Promise<void> {
     // Run from the config folder: the session's own folder may be gone (the
     // desktop app moves its scratch folders), and Windows will not start a
     // program from a folder that does not exist.
+    const sync = await syncFolder($)
+    const syncArgs = sync === undefined ? [] : [`sync=${sync}`]
     const run = await $.process.run(
-      ['node', `${$.plugin.root}/scripts/recent-stats.mjs`, dir, sessionId, ...windowArgs],
+      ['node', `${$.plugin.root}/scripts/recent-stats.mjs`, dir, sessionId, ...windowArgs, ...syncArgs],
       { cwd: dir, timeoutMs: 60_000 },
     )
     if (run.exitCode !== 0) {
@@ -382,6 +386,21 @@ async function refreshRecent($: EngineInterface): Promise<void> {
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
     await update($, countError, () => ({ reason: reason.slice(0, 120), at: Date.now() }))
+  }
+}
+
+// The shared folder computers sync usage through: CLAUDE_USAGE_SYNC_DIR when set,
+// else a "claude-usage" folder in OneDrive when one exists. Sync is off without it.
+async function syncFolder($: EngineInterface): Promise<string | undefined> {
+  const chosen = await $.env.get('CLAUDE_USAGE_SYNC_DIR')
+  if (chosen !== undefined && chosen !== '') return chosen
+  const oneDrive = (await $.env.get('OneDrive')) ?? (await $.env.get('OneDriveConsumer'))
+  if (oneDrive === undefined || oneDrive === '') return undefined
+  const folder = `${oneDrive}/claude-usage`
+  try {
+    return (await $.fs.exists(folder)) ? folder : undefined
+  } catch {
+    return undefined
   }
 }
 

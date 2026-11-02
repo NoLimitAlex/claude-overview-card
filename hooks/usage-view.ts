@@ -4,7 +4,7 @@
 
 import { formatCount, limitLabel, limitOrder, modelName, resetLabel, withCommas } from './stats'
 
-export type Lifetime = { usd: number; since: string | null }
+export type Lifetime = { usd: number; since: string | null; computers?: number }
 
 export type Cell = { label: string; value: string }
 export type Meter = { key: string; label: string; percent: number | undefined; note: string }
@@ -41,10 +41,11 @@ const cellsFor = (t: Totals): Cell[] => [
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-export function lifetimeNote(since: string | null): string {
+export function lifetimeNote(since: string | null, computers = 1): string {
   const d = since ? new Date(since) : undefined
   const from = d && !Number.isNaN(d.getTime()) ? `Since ${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} · ` : ''
-  return `${from}what your usage would cost at Claude API prices`
+  const across = computers > 1 ? ` · ${computers} computers` : ''
+  return `${from}what your usage would cost at Claude API prices${across}`
 }
 
 // 5-hour limit with today's numbers, the weekly limits with the last 7 days,
@@ -128,7 +129,7 @@ export function usageSvg(blocks: Block[], lifetime?: Lifetime, updated?: string,
     parts.push(`<text x="${pad}" y="${y + 10}" ${font} font-size="11" font-weight="600" letter-spacing="0.6" class="section">LIFETIME API VALUE</text>`)
     if (updated) parts.push(`<text x="${width - pad}" y="${y + 10}" ${font} font-size="11" class="section" text-anchor="end">${esc(updated)}</text>`)
     parts.push(`<text x="${pad}" y="${y + 44}" ${font} font-size="30" font-weight="700" class="value">${esc(money(lifetime.usd))}</text>`)
-    parts.push(`<text x="${pad}" y="${y + 64}" ${font} font-size="12" class="label">${esc(lifetimeNote(lifetime.since))}</text>`)
+    parts.push(`<text x="${pad}" y="${y + 64}" ${font} font-size="12" class="label">${esc(lifetimeNote(lifetime.since, lifetime.computers))}</text>`)
     y += 72
     parts.push(`<line x1="${pad}" y1="${y + 8}" x2="${width - pad}" y2="${y + 8}" class="rule" stroke-width="1"/>`)
     y += 26
