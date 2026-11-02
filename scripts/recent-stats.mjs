@@ -7,18 +7,26 @@
 // everything at Claude API list prices (scripts/pricing.mjs): each day of the last
 // week, the session, and the lifetime total.
 // Limit windows given as name=ISO start (5h=..., 7d=...) are totalled too.
-// Usage: node recent-stats.mjs <claude config dir> [session id] [name=start ...]
+// With sync=<folder>, this computer's summary is written there and the other
+// computers' summaries are added in (scripts/sync.mjs).
+// Usage: node recent-stats.mjs <claude config dir> [session id] [name=start ...] [sync=folder]
 import fs from 'node:fs'
 import path from 'node:path'
 
 import { priceUsd } from './pricing.mjs'
+import { SLICE_MS, SUMMARY_VERSION, combineOthers, computerName, readOthers, writeSummary } from './sync.mjs'
 
 const dir = process.argv[2]
 const sessionId = process.argv[3] ?? ''
 // The limit windows to total, by name, from their start times.
 const windows = {}
+let syncFolder = ''
 for (const arg of process.argv.slice(4)) {
   const at = arg.indexOf('=')
+  if (arg.slice(0, at) === 'sync') {
+    syncFolder = arg.slice(at + 1)
+    continue
+  }
   const start = Date.parse(arg.slice(at + 1))
   if (at > 0 && !Number.isNaN(start)) windows[arg.slice(0, at)] = { start, messageCount: 0, tokensByModel: {}, usd: 0 }
 }
@@ -43,8 +51,11 @@ const now = new Date()
 const weekStartDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)
 const weekStart = localDay(weekStartDate)
 const cutoffStart = cutoff ? new Date(`${cutoff}T00:00:00`).getTime() : 0
-// Only logs written after the earlier of those two days began can hold rows we need.
-const since = Math.min(cutoffStart, weekStartDate.getTime(), ...windowStarts)
+// The last 8 days are also kept in 10-minute slices for the sync summary, so
+// another computer can total any limit window from them.
+const slicesFrom = Math.floor((now.getTime() - 8 * 86400_000) / SLICE_MS) * SLICE_MS
+// Only logs written after the earliest of those can hold rows we need.
+const since = Math.min(cutoffStart, weekStartDate.getTime(), slicesFrom, ...windowStarts)
 
 const walk = d => {
   let entries = []
@@ -70,6 +81,8 @@ const day = d => (days[d] ??= { messageCount: 0, sessionCount: 0, tokensByModel:
 const seen = new Set()
 const firstSeen = {}
 const costByDay = {}
+const slices = {}
+const slice = at => (slices[Math.floor(at / SLICE_MS) * SLICE_MS] ??= { m: 0, usd: 0, t: {} })
 let recentUsd = 0
 let sessionUsd = 0
 let write5m = 0
@@ -112,6 +125,11 @@ for (const file of walk(path.join(dir, 'projects'))) {
       w.messageCount++
       if (tokens) w.tokensByModel[model] = (w.tokensByModel[model] || 0) + tokens
     }
+    const sl = at >= slicesFrom ? slice(at) : undefined
+    if (sl) {
+      sl.m++
+      if (tokens) sl.t[model] = (sl.t[model] || 0) + tokens
+    }
     if (isSession) {
       session.messageCount++
       if (tokens) session.tokensByModel[model] = (session.tokensByModel[model] || 0) + tokens
@@ -137,6 +155,7 @@ for (const file of walk(path.join(dir, 'projects'))) {
         if (d > cutoff) recentUsd += usd
         if (isSession) sessionUsd += usd
         for (const w of inWindows) w.usd += usd
+        if (sl) sl.usd += usd
       }
     }
     if (d <= cutoff) continue
@@ -178,6 +197,59 @@ for (const [model, m] of Object.entries(cache.modelUsage ?? {})) {
 }
 
 const sorted = Object.keys(days).sort()
+const lifetimeUsd = cachedUsd + recentUsd
+const recentMessages = sorted.reduce((n, d) => n + days[d].messageCount, 0)
+
+// Sync: write this computer's whole history as one summary, then add the others.
+const sync = { folder: syncFolder || null, computer: computerName(), computers: [], error: null }
+let others = null
+if (syncFolder) {
+  try {
+    const allDays = {}
+    for (const d of cache.dailyActivity ?? []) {
+      if (d.date > cutoff) continue
+      allDays[d.date] = { messageCount: d.messageCount || 0, sessionCount: d.sessionCount || 0, tokensByModel: {} }
+    }
+    for (const d of cache.dailyModelTokens ?? []) {
+      if (d.date > cutoff) continue
+      ;(allDays[d.date] ??= { messageCount: 0, sessionCount: 0, tokensByModel: {} }).tokensByModel = { ...d.tokensByModel }
+    }
+    for (const d of sorted) allDays[d] = { ...days[d], tokensByModel: { ...days[d].tokensByModel } }
+    for (const [d, usd] of Object.entries(costByDay)) if (allDays[d]) allDays[d].usd = usd
+    const cachedHours = { ...(cache.hourCounts ?? {}) }
+    for (const [h, n] of Object.entries(hourCounts)) cachedHours[h] = (cachedHours[h] || 0) + n
+    writeSummary(syncFolder, {
+      version: SUMMARY_VERSION,
+      computer: sync.computer,
+      updatedAt: new Date().toISOString(),
+      firstSessionDate: cache.firstSessionDate ?? null,
+      totalSessions: (cache.totalSessions ?? 0) + sessions,
+      totalMessages: (cache.totalMessages ?? 0) + recentMessages,
+      hourCounts: cachedHours,
+      lifetimeUsd,
+      days: allDays,
+      slices,
+    })
+    const found = readOthers(syncFolder, sync.computer)
+    if (found.length > 0) others = combineOthers(found, { weekStart, windows })
+    sync.computers = [{ name: sync.computer, updatedAt: new Date().toISOString() }, ...(others?.computers ?? [])]
+  } catch (err) {
+    sync.error = String(err?.message ?? err).slice(0, 160)
+  }
+}
+
+// Windows, costs and lifetime count every synced computer; "session" stays this chat.
+if (others) {
+  for (const [name, t] of Object.entries(others.windowTotals)) {
+    const w = windows[name]
+    w.messageCount += t.messageCount
+    w.usd += t.usd
+    for (const [m, n] of Object.entries(t.tokensByModel)) w.tokensByModel[m] = (w.tokensByModel[m] || 0) + n
+  }
+  for (const [d, usd] of Object.entries(others.costByDay)) costByDay[d] = (costByDay[d] || 0) + usd
+}
+const firstSession = [cache.firstSessionDate, others?.firstSessionDate].filter(Boolean).sort()[0] ?? null
+
 process.stdout.write(
   JSON.stringify({
     cutoff,
@@ -192,9 +264,18 @@ process.stdout.write(
     cost: {
       byDay: costByDay,
       sessionUsd,
-      lifetimeUsd: cachedUsd + recentUsd,
-      since: cache.firstSessionDate ?? null,
+      lifetimeUsd: lifetimeUsd + (others?.lifetimeUsd ?? 0),
+      since: firstSession,
       unpriced: [...unpriced].filter(m => m !== '<synthetic>'),
     },
+    others: others && {
+      computers: others.computers,
+      dailyActivity: others.dailyActivity,
+      dailyModelTokens: others.dailyModelTokens,
+      totalSessions: others.totalSessions,
+      totalMessages: others.totalMessages,
+      hourCounts: others.hourCounts,
+    },
+    sync,
   }),
 )
