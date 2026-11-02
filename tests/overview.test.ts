@@ -2,6 +2,8 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { money, smoothBar, usageBlocks, usageSvg } from '../hooks/usage-view'
 import { priceUsd } from '../scripts/pricing.mjs'
+import { mergeOthers } from '../hooks/stats'
+import { lifetimeNote } from '../hooks/usage-view'
 import { dayTotals, duneLine, limitLabel, meterBar, mergeRecent, modelName, resetLabel, summarize } from '../hooks/stats'
 
 const today = new Date()
@@ -118,6 +120,30 @@ describe('stats', () => {
     expect(blocks[1]?.note).toBe('since Sun 5:55 PM')
     expect(blocks[2]?.note).toBe("couldn't count: spawn node ENOENT")
     expect(blocks[2]?.cells[0]?.value).toBe('–')
+  })
+
+  test("another computer's usage is added day by day", async () => {
+    const others = {
+      dailyActivity: [
+        { date: iso(2), messageCount: 5, sessionCount: 1 },
+        { date: iso(1), messageCount: 7, sessionCount: 0 },
+      ],
+      dailyModelTokens: [{ date: iso(2), tokensByModel: { 'claude-fable-5-1': 1_000_000, 'claude-opus-5-5': 50 } }],
+      totalSessions: 3,
+      totalMessages: 12,
+      hourCounts: { '20': 2, '9': 4 },
+    }
+    const merged = mergeOthers(STATS, others)
+    expect(dayTotals(merged, iso(2)).messages).toBe(25)
+    expect(dayTotals(merged, iso(2)).tokens).toBe(101_000_050)
+    expect(dayTotals(merged, iso(1)).messages).toBe(7)
+    expect(merged.totalSessions).toBe(7)
+    expect(merged.totalMessages).toBe(182)
+    expect(summarize(merged, 'all', today).peakHour).toBe('8 PM')
+    expect(merged.dailyActivity?.map(d => d.date)).toEqual([...merged.dailyActivity!.map(d => d.date)].sort())
+    expect(mergeOthers(STATS, null)).toBe(STATS)
+    expect(lifetimeNote(null, 2)).toBe('what your usage would cost at Claude API prices · 2 computers')
+    expect(lifetimeNote(null, 1)).toBe('what your usage would cost at Claude API prices')
   })
 
   test('replies are priced at Claude API list prices', async () => {
