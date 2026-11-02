@@ -11,6 +11,13 @@ import path from 'node:path'
 export const SUMMARY_VERSION = 1
 export const SLICE_MS = 10 * 60 * 1000
 const SUFFIX = '.usage.json'
+// A summary is well under 100 KB; anything far bigger is not one of ours.
+const MAX_SUMMARY_BYTES = 5 * 1024 * 1024
+// Names that would reach an object's prototype if used as keys.
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+// A plain count: finite, not negative, and below anything a person could use.
+const num = v => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v < 1e15 ? v : 0)
+const isRecord = v => v !== null && typeof v === 'object' && !Array.isArray(v)
 
 export function computerName() {
   return os.hostname().replace(/[^A-Za-z0-9_.-]/g, '_') || 'computer'
@@ -40,19 +47,27 @@ export function readOthers(folder, self) {
     if (!name.endsWith(SUFFIX)) continue
     let s
     try {
-      s = JSON.parse(fs.readFileSync(path.join(folder, name), 'utf8'))
+      const file = path.join(folder, name)
+      if (fs.statSync(file).size > MAX_SUMMARY_BYTES) continue
+      s = JSON.parse(fs.readFileSync(file, 'utf8'))
     } catch {
       continue
     }
-    if (s?.version !== SUMMARY_VERSION || typeof s.computer !== 'string' || s.computer === self) continue
+    if (!isRecord(s) || s.version !== SUMMARY_VERSION || typeof s.computer !== 'string' || s.computer === self) continue
+    if (!isRecord(s.days) || (s.slices !== undefined && !isRecord(s.slices))) continue
     const held = newest.get(s.computer)
     if (!held || String(s.updatedAt) > String(held.updatedAt)) newest.set(s.computer, s)
   }
   return [...newest.values()]
 }
 
+// Adds counts by name, ignoring anything that isn't a plain count under a plain name.
 const add = (into, from) => {
-  for (const [k, v] of Object.entries(from ?? {})) into[k] = (into[k] || 0) + v
+  if (!isRecord(from)) return into
+  for (const [k, v] of Object.entries(from)) {
+    if (UNSAFE_KEYS.has(k) || k.length > 100) continue
+    into[k] = (into[k] || 0) + num(v)
+  }
   return into
 }
 
@@ -69,25 +84,28 @@ export function combineOthers(others, { weekStart, windows }) {
   const costByDay = {}
 
   for (const s of others) {
-    for (const [date, d] of Object.entries(s.days ?? {})) {
+    for (const [date, d] of Object.entries(s.days)) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !isRecord(d)) continue
       const into = (days[date] ??= { messageCount: 0, sessionCount: 0, tokensByModel: {} })
-      into.messageCount += d.messageCount || 0
-      into.sessionCount += d.sessionCount || 0
+      into.messageCount += num(d.messageCount)
+      into.sessionCount += num(d.sessionCount)
       add(into.tokensByModel, d.tokensByModel)
-      if (typeof d.usd === 'number' && date >= weekStart) costByDay[date] = (costByDay[date] || 0) + d.usd
+      if (typeof d.usd === 'number' && date >= weekStart) costByDay[date] = (costByDay[date] || 0) + num(d.usd)
     }
     add(hourCounts, s.hourCounts)
-    totalSessions += s.totalSessions || 0
-    totalMessages += s.totalMessages || 0
-    lifetimeUsd += s.lifetimeUsd || 0
-    if (s.firstSessionDate && (!firstSessionDate || s.firstSessionDate < firstSessionDate)) firstSessionDate = s.firstSessionDate
+    totalSessions += num(s.totalSessions)
+    totalMessages += num(s.totalMessages)
+    lifetimeUsd += num(s.lifetimeUsd)
+    const first = typeof s.firstSessionDate === 'string' && !Number.isNaN(Date.parse(s.firstSessionDate)) ? s.firstSessionDate : null
+    if (first && (!firstSessionDate || first < firstSessionDate)) firstSessionDate = first
     for (const [at, slice] of Object.entries(s.slices ?? {})) {
       const start = Number(at)
+      if (!Number.isFinite(start) || !isRecord(slice)) continue
       for (const [name, w] of Object.entries(windows)) {
         if (start < w.start) continue
         const t = windowTotals[name]
-        t.messageCount += slice.m || 0
-        t.usd += slice.usd || 0
+        t.messageCount += num(slice.m)
+        t.usd += num(slice.usd)
         add(t.tokensByModel, slice.t)
       }
     }
