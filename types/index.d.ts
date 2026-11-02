@@ -19,6 +19,16 @@ export type OverviewRecent = {
     since: string | null
     unpriced: string[]
   }
+  // The other computers' usage, added up, when a sync folder is in use.
+  others?: {
+    computers: { name: string; updatedAt: string }[]
+    dailyActivity: { date: string; messageCount: number; sessionCount: number }[]
+    dailyModelTokens: { date: string; tokensByModel: Record<string, number> }[]
+    totalSessions: number
+    totalMessages: number
+    hourCounts: Record<string, number>
+  } | null
+  sync?: { folder: string | null; computer: string; computers: { name: string; updatedAt: string }[]; error: string | null }
   checkedAt: number
 }
 
