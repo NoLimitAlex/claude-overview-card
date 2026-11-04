@@ -301,6 +301,122 @@ export function modelTotals(byModel: Record<string, number>): { tokens: number; 
   return { tokens: rows.reduce((n, r) => n + r.tokens, 0), byModel: rows }
 }
 
+// Tokens by kind: input, output, cache read, cache write.
+export type Kinds = { i: number; o: number; r: number; w: number }
+export type KindsDay = { date: string; byModel: Record<string, Kinds> }
+
+export const kindsSum = (k: Kinds) => k.i + k.o + k.r + k.w
+
+// Each model's tokens by kind over a range, from the days that have them.
+export function kindsInRange(days: KindsDay[], from: string | undefined): { byModel: Record<string, Kinds>; total: Kinds } {
+  const byModel: Record<string, Kinds> = {}
+  const total: Kinds = { i: 0, o: 0, r: 0, w: 0 }
+  for (const d of days) {
+    if (from !== undefined && d.date < from) continue
+    for (const [model, k] of Object.entries(d.byModel)) {
+      const into = (byModel[model] ??= { i: 0, o: 0, r: 0, w: 0 })
+      for (const p of ['i', 'o', 'r', 'w'] as const) {
+        into[p] += k[p]
+        total[p] += k[p]
+      }
+    }
+  }
+  return { byModel, total }
+}
+
+// "350 in · 81.1K out · 22.3M cache read · 379K cache write"
+export function kindsLine(k: Kinds): string {
+  return `${formatCount(k.i)} in · ${formatCount(k.o)} out · ${formatCount(k.r)} cache read · ${formatCount(k.w)} cache write`
+}
+
+export const RANGE_TITLE: Record<Range, string> = { all: 'All time', '30d': 'Last 30 days', '7d': 'Last 7 days' }
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+// 2026-11-03 -> Nov 3
+export function shortDate(key: string): string {
+  const [, m, d] = key.split('-')
+  return `${MONTHS[Number(m) - 1] ?? ''} ${Number(d)}`
+}
+
+export type Bar = { label: string; tokens: number }
+
+// Tokens per day over the range, as at most maxBars bars. Long ranges put several
+// days in each bar, counted back from today so the last bar ends today.
+export function dailyBars(s: StatsCache, range: Range, today: Date, maxBars: number): Bar[] {
+  const perDay: Record<string, number> = {}
+  for (const d of s.dailyModelTokens ?? []) {
+    perDay[d.date] = (perDay[d.date] ?? 0) + Object.values(d.tokensByModel).reduce((n, v) => n + v, 0)
+  }
+  const todayKey = dayKey(today)
+  const first = Object.keys(perDay).filter(d => (perDay[d] ?? 0) > 0).sort()[0]
+  const from = rangeStart(range, today) ?? (first !== undefined && first < todayKey ? first : todayKey)
+  const days: string[] = []
+  for (let d = new Date(`${from}T00:00:00`); dayKey(d) <= todayKey; d = addDays(d, 1)) days.push(dayKey(d))
+  const size = Math.max(1, Math.ceil(days.length / Math.max(1, maxBars)))
+  const bars: Bar[] = []
+  for (let end = days.length; end > 0; end -= size) {
+    const group = days.slice(Math.max(0, end - size), end)
+    bars.unshift({ label: shortDate(group[0] ?? todayKey), tokens: group.reduce((n, d) => n + (perDay[d] ?? 0), 0) })
+  }
+  return bars
+}
+
+// The top of the chart's scale: five steps of 1, 2, 2.5 or 5 times a power of ten.
+export function chartTop(max: number): number {
+  if (max <= 0) return 5
+  const raw = max / 5
+  const power = 10 ** Math.floor(Math.log10(raw))
+  const step = [1, 2, 2.5, 5, 10].map(f => f * power).find(v => v >= raw) ?? 10 * power
+  return step * 5
+}
+
+// The bar chart as an SVG for the desktop surface.
+export function barsSvg(bars: Bar[]): string {
+  const width = 600
+  const height = 200
+  const left = 44
+  const top = 8
+  const bottom = 24
+  const plotW = width - left - 4
+  const plotH = height - top - bottom
+  const scale = chartTop(Math.max(0, ...bars.map(b => b.tokens)))
+  const parts: string[] = []
+  const font = 'font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11"'
+  for (let j = 0; j <= 5; j++) {
+    const y = (top + plotH - (j / 5) * plotH).toFixed(1)
+    parts.push(`<line x1="${left}" y1="${y}" x2="${width}" y2="${y}" class="rule" stroke-width="1"/>`)
+    parts.push(`<text x="${left - 8}" y="${Number(y) + 4}" ${font} class="label" text-anchor="end">${formatCount((scale / 5) * j)}</text>`)
+  }
+  const slot = plotW / Math.max(1, bars.length)
+  const barW = Math.max(2, slot * 0.7)
+  const every = Math.max(1, Math.ceil(bars.length / 6))
+  bars.forEach((b, i) => {
+    const h = (b.tokens / scale) * plotH
+    const x = left + 4 + i * slot + (slot - barW) / 2
+    if (h > 0) parts.push(`<rect x="${x.toFixed(1)}" y="${(top + plotH - h).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, h).toFixed(1)}" rx="2" fill="#4a86e0"/>`)
+    if (i % every === 0 || i === bars.length - 1) {
+      parts.push(`<text x="${(x + barW / 2).toFixed(1)}" y="${height - 6}" ${font} class="label" text-anchor="middle">${b.label}</text>`)
+    }
+  })
+  const style = '<style>.label{fill:#9a9aa0}.rule{stroke:#ffffff;stroke-opacity:.08}@media (prefers-color-scheme: light){.label{fill:#6a6a70}.rule{stroke:#000000;stroke-opacity:.1}}</style>'
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMinYMin meet">${style}${parts.join('')}</svg>`
+}
+
+const VERTICAL = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
+
+// The bar chart for the terminal, top row first, in eighths of a cell.
+// A day with any tokens shows at least a sliver.
+export function columnRows(bars: Bar[], height: number, barWidth: number): string[] {
+  const max = Math.max(0, ...bars.map(b => b.tokens))
+  const eighths = bars.map(b => (b.tokens > 0 && max > 0 ? Math.max(1, Math.round((b.tokens / max) * height * 8)) : 0))
+  const rows: string[] = []
+  for (let r = height - 1; r >= 0; r--) {
+    rows.push(eighths.map(n => (VERTICAL[Math.max(0, Math.min(8, n - r * 8))] ?? ' ').repeat(barWidth)).join(' '))
+  }
+  return rows
+}
+
 // five_hour -> 5-hour limit, seven_day -> Weekly · all models, seven_day_fable -> Weekly · Fable
 export function limitLabel(kind: string): string {
   if (kind === 'five_hour') return '5-hour limit'

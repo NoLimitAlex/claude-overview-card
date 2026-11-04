@@ -8,7 +8,11 @@ export type OverviewRecent = {
   dailyActivity: { date: string; messageCount: number; sessionCount: number }[]
   dailyModelTokens: { date: string; tokensByModel: Record<string, number> }[]
   hourCounts: Record<string, number>
-  session?: { messageCount: number; tokensByModel: Record<string, number> }
+  // Tokens by kind (input, output, cache read, cache write) per day and model, for
+  // every day this computer has: split exactly from the logs, and for the days only
+  // the cache covers, the way that model's lifetime totals split.
+  tokenKinds?: { date: string; byModel: Record<string, { i: number; o: number; r: number; w: number }> }[]
+  session?:{ messageCount: number; tokensByModel: Record<string, number> }
   // Totals since each limit window began, by name (5h, 7d).
   windows?: Record<string, { start: string; messageCount: number; tokensByModel: Record<string, number>; usd: number }>
   // What the usage would cost at Claude API list prices (scripts/pricing.mjs).
@@ -24,6 +28,7 @@ export type OverviewRecent = {
     computers: { name: string; updatedAt: string }[]
     dailyActivity: { date: string; messageCount: number; sessionCount: number }[]
     dailyModelTokens: { date: string; tokensByModel: Record<string, number> }[]
+    tokenKinds?: { date: string; byModel: Record<string, { i: number; o: number; r: number; w: number }> }[]
     totalSessions: number
     totalMessages: number
     hourCounts: Record<string, number>

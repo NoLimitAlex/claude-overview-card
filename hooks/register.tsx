@@ -3,14 +3,21 @@ import type { EngineInterface, Register, SessionContextUsage, SessionCost, Sessi
 
 import type { OverviewCountError, OverviewLimits, OverviewRecent, OverviewRange, OverviewTab } from '../types'
 import {
+  barsSvg,
+  columnRows,
+  dailyBars,
   dayKey,
   dayTotals,
+  kindsInRange,
+  kindsLine,
+  kindsSum,
   modelTotals,
   duneLine,
   formatCount,
   grid,
   mergeOthers,
   mergeRecent,
+  RANGE_TITLE,
   rangeStart,
   rasterCells,
   summarize,
@@ -27,7 +34,7 @@ const range = atom({ plugin: 'overview-card', key: 'range' } as const, 'all' as 
 const tab = atom({ plugin: 'overview-card', key: 'tab' } as const, 'overview' as OverviewTab)
 // The shape tag changes whenever the counter's output does, so numbers saved by an
 // older version are ignored instead of shown without the newer fields.
-const recent = atom({ plugin: 'overview-card', key: 'recent' } as const, null as OverviewRecent | null, { shape: 'counts-v5' })
+const recent = atom({ plugin: 'overview-card', key: 'recent' } as const, null as OverviewRecent | null, { shape: 'counts-v6' })
 const limits = atom({ plugin: 'overview-card', key: 'limits' } as const, null as OverviewLimits | null)
 const countError = atom({ plugin: 'overview-card', key: 'countError' } as const, null as OverviewCountError | null)
 const REFRESH_MS = 10 * 60 * 1000
@@ -78,12 +85,14 @@ export const register: Register = on => {
     const cached = await loadStats($)
     const extra = await read($, recent)
     if (extra === null || Date.now() - extra.checkedAt > STALE_MS) recountSoon($)
-    const stats = cached === undefined ? undefined : mergeOthers(mergeRecent(cached, extra), extra?.others)
+    // Without stats-cache.json (/stats never run) the logs alone fill the card.
+    const base = cached ?? (extra === null ? undefined : {})
+    const stats = base === undefined ? undefined : mergeOthers(mergeRecent(base, extra), extra?.others)
     if (stats === undefined) {
       return (
         <Box flexDirection="column">
           <Text bold>What's up next?</Text>
-          <Text dimColor>No usage stats yet. Run /stats once, then open /overview again.</Text>
+          <Text dimColor>No usage stats yet. Counting your usage… open /overview again in a moment.</Text>
         </Box>
       )
     }
@@ -164,20 +173,71 @@ export const register: Register = on => {
       const nameWidth = 14
       const valueWidth = 8
       const barRoom = Math.max(6, width - nameWidth - valueWidth - 10)
+      // This computer's days and the synced ones; a computer on an older version of
+      // the card syncs totals without kinds, and those show as "Not split yet".
+      const kinds = kindsInRange([...(extra?.tokenKinds ?? []), ...(extra?.others?.tokenKinds ?? [])], rangeStart(current, today))
+      const unsplit = sum.tokens - kindsSum(kinds.total)
+      const kindRows: [string, number][] = [
+        ['Input', kinds.total.i],
+        ['Output', kinds.total.o],
+        ['Cache read', kinds.total.r],
+        ['Cache write', kinds.total.w],
+      ]
+      if (unsplit > sum.tokens * 0.001) kindRows.push(['Not split yet', unsplit])
+      const row = (key: string, label: string, value: string, bold = false) => (
+        <Box key={key} flexDirection="row" justifyContent="space-between" width={width}>
+          <Text bold={bold} dimColor={!bold}>{label}</Text>
+          <Text bold={bold}>{value}</Text>
+        </Box>
+      )
       return (
         <Box flexDirection="column" marginTop={1}>
           {sum.byModel.map(m => {
             const share = sum.tokens > 0 ? Math.round((m.tokens / sum.tokens) * 100) : 0
             const bar = '█'.repeat(Math.max(1, Math.round((m.tokens / top) * barRoom)))
+            const k = kinds.byModel[m.model]
             return (
-              <Box key={m.model} flexDirection="row" gap={1}>
-                <Box width={nameWidth}><Text wrap="truncate-end">{modelName(m.model)}</Text></Box>
-                <Box width={valueWidth}><Text bold>{formatCount(m.tokens)}</Text></Box>
-                <Text color={ACCENT}>{bar}</Text>
-                <Text dimColor>{share}%</Text>
+              <Box key={m.model} flexDirection="column">
+                <Box flexDirection="row" gap={1}>
+                  <Box width={nameWidth}><Text wrap="truncate-end">{modelName(m.model)}</Text></Box>
+                  <Box width={valueWidth}><Text bold>{formatCount(m.tokens)}</Text></Box>
+                  <Text color={ACCENT}>{bar}</Text>
+                  <Text dimColor>{share}%</Text>
+                </Box>
+                {k !== undefined && <Text dimColor wrap="truncate-end">{kindsLine(k)}</Text>}
               </Box>
             )
           })}
+          <Box marginTop={1}>{row('kinds-title', 'Tokens', RANGE_TITLE[current], true)}</Box>
+          {kindRows.map(([label, n]) => row(`kind-${label}`, label, formatCount(n)))}
+          {row('kinds-total', 'Total', formatCount(sum.tokens), true)}
+          <Box marginTop={1}><Text bold>Tokens per day</Text></Box>
+          {perDayChart()}
+        </Box>
+      )
+    }
+
+    function perDayChart() {
+      if (e.surface === 'desktop') {
+        const { Svg } = $.ui.resolve(e)
+        const bars = dailyBars(stats!, current, today, 30)
+        const busiest = bars.reduce((b, x) => (x.tokens > b.tokens ? x : b), bars[0] ?? { label: '', tokens: 0 })
+        return <Svg source={barsSvg(bars)} alt={`Tokens per day, ${RANGE_TITLE[current]}; most on ${busiest.label}: ${formatCount(busiest.tokens)}`} />
+      }
+      const barWidth = 2
+      const bars = dailyBars(stats!, current, today, Math.max(7, Math.floor(width / (barWidth + 1))))
+      const chartWidth = bars.length * (barWidth + 1) - 1
+      const max = Math.max(0, ...bars.map(b => b.tokens))
+      return (
+        <Box flexDirection="column">
+          <Text dimColor>{formatCount(max)}</Text>
+          {columnRows(bars, 6, barWidth).map((line, i) => (
+            <Text key={`col-${i}`} color={ACCENT}>{line}</Text>
+          ))}
+          <Box flexDirection="row" justifyContent="space-between" width={Math.max(chartWidth, 14)}>
+            <Text dimColor>{bars[0]?.label ?? ''}</Text>
+            {bars.length > 1 && <Text dimColor>{bars[bars.length - 1]?.label}</Text>}
+          </Box>
         </Box>
       )
     }

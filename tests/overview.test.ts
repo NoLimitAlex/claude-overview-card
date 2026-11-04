@@ -5,6 +5,7 @@ import { priceUsd } from '../scripts/pricing.mjs'
 import { mergeOthers } from '../hooks/stats'
 import { lifetimeNote } from '../hooks/usage-view'
 import { dayTotals, duneLine, limitLabel, meterBar, mergeRecent, modelName, resetLabel, summarize } from '../hooks/stats'
+import { barsSvg, chartTop, columnRows, dailyBars, kindsInRange, kindsLine, kindsSum, shortDate } from '../hooks/stats'
 
 const today = new Date()
 const iso = (daysAgo: number) => {
@@ -177,6 +178,38 @@ describe('stats', () => {
     expect(modelName('claude-opus-4-8')).toBe('Opus 4.8')
     expect(duneLine(1_000_000_000)).toBe("You've used ~4,300x more tokens than Dune.")
   })
+
+  test('token kinds add up per model over the range', async () => {
+    const days = [
+      { date: iso(20), byModel: { 'claude-opus-5': { i: 1, o: 2, r: 3, w: 4 } } },
+      { date: iso(1), byModel: { 'claude-opus-5': { i: 10, o: 20, r: 30, w: 40 }, 'claude-fable-5-1': { i: 5, o: 0, r: 0, w: 0 } } },
+    ]
+    const all = kindsInRange(days, undefined)
+    expect(all.byModel['claude-opus-5']).toEqual({ i: 11, o: 22, r: 33, w: 44 })
+    expect(kindsSum(all.total)).toBe(115)
+    expect(kindsSum(kindsInRange(days, iso(6)).total)).toBe(105)
+    expect(kindsLine({ i: 350, o: 81_100, r: 22_300_000, w: 379_000 })).toBe('350 in · 81.1K out · 22.3M cache read · 379K cache write')
+  })
+
+  test('tokens per day fill one bar per day, or several days per bar', async () => {
+    const week = dailyBars(STATS, '7d', today, 30)
+    expect(week.length).toBe(7)
+    expect(week[4]?.tokens).toBe(100_000_000)
+    expect(week[6]?.label).toBe(shortDate(iso(0)))
+    // 61 days from the first one to today, 30 bars at most: three days a bar, the last ending today
+    const all = dailyBars(STATS, 'all', today, 30)
+    expect(all.length).toBeLessThanOrEqual(30)
+    expect(all.reduce((n, b) => n + b.tokens, 0)).toBe(1_000_000_000)
+    expect(all[all.length - 1]?.tokens).toBe(100_000_000)
+    expect(shortDate('2026-11-03')).toBe('Nov 3')
+    expect(chartTop(21_000_000)).toBe(25_000_000)
+    expect(chartTop(0)).toBe(5)
+    expect(barsSvg(week)).toContain('<rect')
+    const rows = columnRows([{ label: 'a', tokens: 8 }, { label: 'b', tokens: 1 }, { label: 'c', tokens: 0 }], 2, 1)
+    // 1 of 8 on a 2-row chart is two eighths; an empty day stays blank
+    expect(rows).toEqual(['█    ', '█ ▂  '])
+    expect(columnRows([{ label: 'a', tokens: 1000 }, { label: 'b', tokens: 1 }], 1, 1)).toEqual(['█ ▁'])
+  })
 })
 
 test('the card draws on the terminal and the desktop and its buttons switch views', async ($, on) => {
@@ -197,6 +230,14 @@ test('the card draws on the terminal and the desktop and its buttons switch view
     expect(await ui.find({ key: 'heatmap' }) ?? (await ui.find({ type: 'Svg' }))).toBeDefined()
     await ui.press({ key: 'tab-models' })
     expect(await ui.find({ text: /Opus 5/ })).toBeDefined()
+    expect(await ui.find({ text: /Cache read/ })).toBeDefined()
+    expect(await ui.find({ text: /Tokens per day/ })).toBeDefined()
+    // No counted kinds in the test world, so every token shows as not split yet.
+    expect(await ui.find({ text: /Not split yet/ })).toBeDefined()
+    if (surface === 'desktop') {
+      const svgs = await ui.findAll({ type: 'Svg' })
+      expect(svgs.some(svg => String(svg.props.alt).startsWith('Tokens per day'))).toBe(true)
+    }
     await ui.press({ key: 'range-7d' })
     expect(await ui.find({ text: /Fable 5.1/ })).toBeDefined()
     expect(await ui.find({ text: /^Opus 5$/ })).toBeUndefined()
@@ -206,13 +247,13 @@ test('the card draws on the terminal and the desktop and its buttons switch view
   }
 })
 
-test('with no stats file the card says how to get one', async ($, on) => {
+test('with no stats file the card says it is counting', async ($, on) => {
   mock.env(on, { USERPROFILE: 'C:/Users/test' })
   on('fs.read', async () => {
     throw new Error('ENOENT')
   })
   const ui = await $.ui.mount({ plugin: 'overview-card', surface: 'terminal', component: 'Pane', requestId: 'overview', props: PANE })
-  expect(await ui.find({ text: /Run \/stats once/ })).toBeDefined()
+  expect(await ui.find({ text: /Counting your usage/ })).toBeDefined()
   await ui.unmount()
 })
 

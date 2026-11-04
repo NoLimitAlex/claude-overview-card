@@ -83,6 +83,15 @@ const firstSeen = {}
 const costByDay = {}
 const slices = {}
 const slice = at => (slices[Math.floor(at / SLICE_MS) * SLICE_MS] ??= { m: 0, usd: 0, t: {} })
+// Tokens per day and model by kind: input, output, cache read, cache write.
+const kinds = {}
+const addKinds = (d, model, k) => {
+  const into = ((kinds[d] ??= {})[model] ??= { i: 0, o: 0, r: 0, w: 0 })
+  into.i += k.i
+  into.o += k.o
+  into.r += k.r
+  into.w += k.w
+}
 let recentUsd = 0
 let sessionUsd = 0
 let write5m = 0
@@ -161,7 +170,29 @@ for (const file of walk(path.join(dir, 'projects'))) {
     if (d <= cutoff) continue
     const r = day(d)
     r.messageCount++
-    if (tokens) r.tokensByModel[model] = (r.tokensByModel[model] || 0) + tokens
+    if (tokens) {
+      r.tokensByModel[model] = (r.tokensByModel[model] || 0) + tokens
+      addKinds(d, model, {
+        i: u.input_tokens || 0,
+        o: u.output_tokens || 0,
+        r: u.cache_read_input_tokens || 0,
+        w: u.cache_creation_input_tokens || 0,
+      })
+    }
+  }
+}
+
+// The days the cache covers only hold a total per model, so each is split the way
+// that model's lifetime totals in the cache split.
+for (const d of cache.dailyModelTokens ?? []) {
+  if (d.date > cutoff) continue
+  for (const [model, n] of Object.entries(d.tokensByModel ?? {})) {
+    const m = cache.modelUsage?.[model]
+    const parts = m && [m.inputTokens || 0, m.outputTokens || 0, m.cacheReadInputTokens || 0, m.cacheCreationInputTokens || 0]
+    const sum = parts ? parts[0] + parts[1] + parts[2] + parts[3] : 0
+    if (!sum || !n) continue
+    const [i, o, r] = parts.slice(0, 3).map(p => Math.round((n * p) / sum))
+    addKinds(d.date, model, { i, o, r, w: Math.max(0, n - i - o - r) })
   }
 }
 
@@ -216,6 +247,7 @@ if (syncFolder) {
     }
     for (const d of sorted) allDays[d] = { ...days[d], tokensByModel: { ...days[d].tokensByModel } }
     for (const [d, usd] of Object.entries(costByDay)) if (allDays[d]) allDays[d].usd = usd
+    for (const [d, k] of Object.entries(kinds)) if (allDays[d]) allDays[d].kinds = k
     const cachedHours = { ...(cache.hourCounts ?? {}) }
     for (const [h, n] of Object.entries(hourCounts)) cachedHours[h] = (cachedHours[h] || 0) + n
     writeSummary(syncFolder, {
@@ -257,6 +289,8 @@ process.stdout.write(
     dailyActivity: sorted.map(d => ({ date: d, messageCount: days[d].messageCount, sessionCount: days[d].sessionCount })),
     dailyModelTokens: sorted.map(d => ({ date: d, tokensByModel: days[d].tokensByModel })),
     hourCounts,
+    // Every day this computer has, the cache's days included.
+    tokenKinds: Object.keys(kinds).sort().map(d => ({ date: d, byModel: kinds[d] })),
     session,
     windows: Object.fromEntries(
       Object.entries(windows).map(([name, w]) => [name, { ...w, start: new Date(w.start).toISOString() }]),
@@ -272,6 +306,7 @@ process.stdout.write(
       computers: others.computers,
       dailyActivity: others.dailyActivity,
       dailyModelTokens: others.dailyModelTokens,
+      tokenKinds: others.tokenKinds,
       totalSessions: others.totalSessions,
       totalMessages: others.totalMessages,
       hourCounts: others.hourCounts,

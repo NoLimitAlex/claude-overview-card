@@ -74,6 +74,7 @@ const add = (into, from) => {
 // The other computers added together, in the shapes the card merges.
 export function combineOthers(others, { weekStart, windows }) {
   const days = {}
+  const kinds = {}
   const hourCounts = {}
   const windowTotals = {}
   for (const name of Object.keys(windows)) windowTotals[name] = { messageCount: 0, tokensByModel: {}, usd: 0 }
@@ -90,6 +91,13 @@ export function combineOthers(others, { weekStart, windows }) {
       into.messageCount += num(d.messageCount)
       into.sessionCount += num(d.sessionCount)
       add(into.tokensByModel, d.tokensByModel)
+      // Tokens by kind per model; summaries from older versions don't have them.
+      if (isRecord(d.kinds)) {
+        for (const [model, k] of Object.entries(d.kinds)) {
+          if (UNSAFE_KEYS.has(model) || model.length > 100 || !isRecord(k)) continue
+          add(((kinds[date] ??= {})[model] ??= { i: 0, o: 0, r: 0, w: 0 }), { i: k.i, o: k.o, r: k.r, w: k.w })
+        }
+      }
       if (typeof d.usd === 'number' && date >= weekStart) costByDay[date] = (costByDay[date] || 0) + num(d.usd)
     }
     add(hourCounts, s.hourCounts)
@@ -116,6 +124,7 @@ export function combineOthers(others, { weekStart, windows }) {
     computers: others.map(s => ({ name: s.computer, updatedAt: s.updatedAt })),
     dailyActivity: sorted.map(d => ({ date: d, messageCount: days[d].messageCount, sessionCount: days[d].sessionCount })),
     dailyModelTokens: sorted.map(d => ({ date: d, tokensByModel: days[d].tokensByModel })),
+    tokenKinds: Object.keys(kinds).sort().map(d => ({ date: d, byModel: kinds[d] })),
     totalSessions,
     totalMessages,
     hourCounts,
